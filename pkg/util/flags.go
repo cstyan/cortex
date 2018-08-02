@@ -3,6 +3,7 @@ package util
 import (
 	"flag"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -87,5 +88,19 @@ func (v *URLValue) Set(s string) error {
 		return err
 	}
 	v.URL = u
+	return nil
+}
+
+// StringSlice is a slice of strings that implements flag.Value
+type StringSlice []string
+
+// String implements flag.Value
+func (v StringSlice) String() string {
+	return strings.Join(v, " ")
+}
+
+// Set implements flag.Value
+func (v *StringSlice) Set(s string) error {
+	*v = append(*v, s)
 	return nil
 }
