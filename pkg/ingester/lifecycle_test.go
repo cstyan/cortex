@@ -110,7 +110,7 @@ func TestIngesterTransfer(t *testing.T) {
 			Timestamp: ts,
 			Value:     val,
 		},
-	}))
+	}, client.API))
 	require.NoError(t, err)
 
 	// Start a second ingester, but let it go into PENDING
@@ -294,7 +294,7 @@ func TestIngesterFlush(t *testing.T) {
 			Timestamp: ts,
 			Value:     val,
 		},
-	}))
+	}, client.API))
 	require.NoError(t, err)
 
 	// We add a 100ms sleep into the flush loop, such that we can reliably detect

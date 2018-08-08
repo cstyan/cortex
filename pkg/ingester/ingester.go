@@ -288,7 +288,7 @@ func (i *Ingester) Push(ctx old_ctx.Context, req *client.WriteRequest) (*client.
 	samples := client.FromWriteRequest(req)
 
 	for j := range samples {
-		err := i.append(ctx, &samples[j])
+		err := i.append(ctx, &samples[j], req.Source)
 		if err == nil {
 			continue
 		}
@@ -308,7 +308,7 @@ func (i *Ingester) Push(ctx old_ctx.Context, req *client.WriteRequest) (*client.
 	return &client.WriteResponse{}, lastPartialErr
 }
 
-func (i *Ingester) append(ctx context.Context, sample *model.Sample) error {
+func (i *Ingester) append(ctx context.Context, sample *model.Sample, source client.WriteRequest_SourceEnum) error {
 	for ln, lv := range sample.Metric {
 		if len(lv) == 0 {
 			delete(sample.Metric, ln)
@@ -346,7 +346,14 @@ func (i *Ingester) append(ctx context.Context, sample *model.Sample) error {
 
 	i.memoryChunks.Add(float64(len(series.chunkDescs) - prevNumChunks))
 	i.ingestedSamples.Inc()
-	state.ingestedSamples.inc()
+	switch source {
+	case client.RULE:
+		state.ingestedRuleSamples.inc()
+	case client.API:
+		fallthrough
+	default:
+		state.ingestedAPISamples.inc()
+	}
 
 	return err
 }
@@ -465,8 +472,9 @@ func (i *Ingester) UserStats(ctx old_ctx.Context, req *client.UserStatsRequest) 
 	}
 
 	return &client.UserStatsResponse{
-		IngestionRate: state.ingestedSamples.rate(),
-		NumSeries:     uint64(state.fpToSeries.length()),
+		ApiIngestionRate:  state.ingestedAPISamples.rate(),
+		RuleIngestionRate: state.ingestedRuleSamples.rate(),
+		NumSeries:         uint64(state.fpToSeries.length()),
 	}, nil
 }
 
@@ -483,8 +491,9 @@ func (i *Ingester) AllUserStats(ctx old_ctx.Context, req *client.UserStatsReques
 		response.Stats = append(response.Stats, &client.UserIDStatsResponse{
 			UserId: userID,
 			Data: &client.UserStatsResponse{
-				IngestionRate: state.ingestedSamples.rate(),
-				NumSeries:     uint64(state.fpToSeries.length()),
+				ApiIngestionRate:  state.ingestedAPISamples.rate(),
+				RuleIngestionRate: state.ingestedRuleSamples.rate(),
+				NumSeries:         uint64(state.fpToSeries.length()),
 			},
 		})
 	}

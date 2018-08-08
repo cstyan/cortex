@@ -40,12 +40,13 @@ type userStates struct {
 }
 
 type userState struct {
-	userID          string
-	fpLocker        *fingerprintLocker
-	fpToSeries      *seriesMap
-	mapper          *fpMapper
-	index           *invertedIndex
-	ingestedSamples *ewmaRate
+	userID              string
+	fpLocker            *fingerprintLocker
+	fpToSeries          *seriesMap
+	mapper              *fpMapper
+	index               *invertedIndex
+	ingestedAPISamples  *ewmaRate
+	ingestedRuleSamples *ewmaRate
 
 	seriesInMetricMtx sync.Mutex
 	seriesInMetric    map[model.LabelValue]int
@@ -93,7 +94,8 @@ func (us *userStates) gc() {
 func (us *userStates) updateRates() {
 	us.states.Range(func(key, value interface{}) bool {
 		state := value.(*userState)
-		state.ingestedSamples.tick()
+		state.ingestedAPISamples.tick()
+		state.ingestedRuleSamples.tick()
 		return true
 	})
 }
@@ -146,12 +148,13 @@ func (us *userStates) getOrCreateSeries(ctx context.Context, metric model.Metric
 		// in the map.  Another goroutine may have got there before
 		// us, in which case this userState will be discarded
 		state = &userState{
-			userID:          userID,
-			fpToSeries:      newSeriesMap(),
-			fpLocker:        newFingerprintLocker(16),
-			index:           newInvertedIndex(),
-			ingestedSamples: newEWMARate(0.2, us.cfg.RateUpdatePeriod),
-			seriesInMetric:  map[model.LabelValue]int{},
+			userID:              userID,
+			fpToSeries:          newSeriesMap(),
+			fpLocker:            newFingerprintLocker(16),
+			index:               newInvertedIndex(),
+			ingestedAPISamples:  newEWMARate(0.2, us.cfg.RateUpdatePeriod),
+			ingestedRuleSamples: newEWMARate(0.2, us.cfg.RateUpdatePeriod),
+			seriesInMetric:      map[model.LabelValue]int{},
 		}
 		state.mapper = newFPMapper(state.fpToSeries)
 		stored, _ := us.states.LoadOrStore(userID, state)

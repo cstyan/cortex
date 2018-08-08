@@ -582,8 +582,11 @@ func (d *Distributor) UserStats(ctx context.Context) (*UserStats, error) {
 
 	totalStats := &UserStats{}
 	for _, resp := range resps {
-		totalStats.IngestionRate += resp.(*client.UserStatsResponse).IngestionRate
-		totalStats.NumSeries += resp.(*client.UserStatsResponse).NumSeries
+		r := resp.(*client.UserStatsResponse)
+		totalStats.IngestionRate += r.ApiIngestionRate + r.RuleIngestionRate
+		totalStats.APIIngestionRate += r.ApiIngestionRate
+		totalStats.RuleIngestionRate += r.RuleIngestionRate
+		totalStats.NumSeries += r.NumSeries
 	}
 
 	totalStats.IngestionRate /= float64(d.ring.ReplicationFactor())
@@ -622,7 +625,9 @@ func (d *Distributor) AllUserStats(ctx context.Context) ([]UserIDStats, error) {
 		}
 		for _, u := range resp.Stats {
 			s := perUserTotals[u.UserId]
-			s.IngestionRate += u.Data.IngestionRate
+			s.IngestionRate += u.Data.ApiIngestionRate + u.Data.RuleIngestionRate
+			s.APIIngestionRate += u.Data.ApiIngestionRate
+			s.RuleIngestionRate += u.Data.RuleIngestionRate
 			s.NumSeries += u.Data.NumSeries
 			perUserTotals[u.UserId] = s
 		}
@@ -634,8 +639,10 @@ func (d *Distributor) AllUserStats(ctx context.Context) ([]UserIDStats, error) {
 		response = append(response, UserIDStats{
 			UserID: id,
 			UserStats: UserStats{
-				IngestionRate: stats.IngestionRate,
-				NumSeries:     stats.NumSeries,
+				IngestionRate:     stats.IngestionRate,
+				APIIngestionRate:  stats.APIIngestionRate,
+				RuleIngestionRate: stats.RuleIngestionRate,
+				NumSeries:         stats.NumSeries,
 			},
 		})
 	}
