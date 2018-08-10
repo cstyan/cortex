@@ -60,10 +60,11 @@ type Alertmanager struct {
 // New creates a new Alertmanager.
 func New(peer *cluster.Peer, peerTimeout time.Duration, cfg *Config) (*Alertmanager, error) {
 	am := &Alertmanager{
-		cfg:    cfg,
-		peer:   peer,
-		logger: log.With(cfg.Logger, "user", cfg.UserID),
-		stop:   make(chan struct{}),
+		cfg:         cfg,
+		peer:        peer,
+		peerTimeout: peerTimeout,
+		logger:      log.With(cfg.Logger, "user", cfg.UserID),
+		stop:        make(chan struct{}),
 	}
 
 	am.wg.Add(1)
