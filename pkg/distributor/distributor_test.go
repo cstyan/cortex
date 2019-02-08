@@ -37,6 +37,42 @@ var (
 	ctx     = user.InjectOrgID(context.Background(), "user")
 )
 
+type clusterTrackerMock struct {
+	instances map[string]instanceTracker
+}
+
+func (c *clusterTrackerMock) LookupInstance(cluster, instance string) *instanceTracker {
+	now := time.Now().UnixNano()
+	ret := instanceTracker{}
+	v, ok := c.instances[cluster]
+	if !ok {
+		ret.instance = instance
+		ret.timestamp = now
+		c.instances[cluster] = ret
+		return &ret
+	}
+	if v.instance == instance {
+		ret.instance = instance
+		ret.timestamp = now
+		return &ret
+	}
+	return nil
+}
+
+// noop
+func (c *clusterTrackerMock) StartWatch() {
+}
+
+// noop
+func (c *clusterTrackerMock) setTimeout(instance, write int64) {
+}
+
+func newClusterTrackerMock() clusterTracker {
+	return &clusterTrackerMock{
+		instances: make(map[string]instanceTracker),
+	}
+}
+
 func TestDistributorPush(t *testing.T) {
 	for i, tc := range []struct {
 		numIngesters     int
@@ -98,6 +134,47 @@ func TestDistributorPush(t *testing.T) {
 				defer d.Stop()
 
 				request := makeWriteRequest(tc.samples)
+				response, err := d.Push(ctx, request)
+				assert.Equal(t, tc.expectedResponse, response)
+				assert.Equal(t, tc.expectedError, err)
+			})
+		}
+	}
+}
+
+func TestDistributorPush_HAInstances(t *testing.T) {
+	for i, tc := range []struct {
+		acceptedInstance string
+		testInstance     string
+		cluster          string
+		samples          int
+		expectedResponse *client.WriteResponse
+		expectedError    error
+	}{
+		{
+			acceptedInstance: "instance2",
+			testInstance:     "instance0",
+			cluster:          "cluster0",
+			samples:          5,
+			expectedError:    fmt.Errorf("dropping sample"),
+		},
+		{
+			acceptedInstance: "instance0",
+			testInstance:     "instance0",
+			cluster:          "cluster0",
+			samples:          5,
+			expectedResponse: success,
+		},
+	} {
+		for _, shardByAllLabels := range []bool{true, false} {
+			t.Run(fmt.Sprintf("[%d](shardByAllLabels=%v)", i, shardByAllLabels), func(t *testing.T) {
+				d := prepare(t, 1, 1, 0, shardByAllLabels)
+				d.instances = newClusterTrackerMock()
+				// Fake the accepted instance.
+				ret := d.instances.LookupInstance(tc.cluster, tc.acceptedInstance)
+				assert.Equal(t, ret.instance, tc.acceptedInstance)
+
+				request := makeWriteRequestHA(tc.samples, tc.testInstance, tc.cluster)
 				response, err := d.Push(ctx, request)
 				assert.Equal(t, tc.expectedResponse, response)
 				assert.Equal(t, tc.expectedError, err)
@@ -316,6 +393,20 @@ func makeWriteRequest(samples int) *client.WriteRequest {
 		request.Timeseries = append(request.Timeseries, ts)
 	}
 	return request
+}
+
+func makeWriteRequestHA(samples int, instance, cluster string) *client.WriteRequest {
+	out := &client.WriteRequest{}
+
+	temp := makeWriteRequest(samples)
+	for _, ts := range temp.Timeseries {
+		ts.TimeSeries.Labels = append(ts.TimeSeries.Labels, []client.LabelPair{
+			{Name: []byte(haInstanceBytes), Value: []byte(instance)},
+			{Name: []byte(haClusterBytes), Value: []byte(cluster)},
+		}...)
+		out.Timeseries = append(out.Timeseries, ts)
+	}
+	return out
 }
 
 func expectedResponse(start, end int) model.Matrix {

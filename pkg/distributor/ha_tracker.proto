@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package distributor;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+
+message ClustersDesc {
+    map<string, int64> clusters = 1 [(gogoproto.nullable) = false];
+}
+
+message InstanceDesc {
+    string instance = 1;
+    int64 timestamp = 2;
+}

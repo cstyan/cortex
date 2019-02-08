@@ -78,6 +78,12 @@ var (
 	})
 )
 
+type clusterTracker interface {
+	LookupInstance(cluster string, instance string) *instanceTracker
+	setTimeout(overwrite, write int64)
+	StartWatch()
+}
+
 // Distributor is a storage.SampleAppender and a client.Querier which
 // forwards appends and queries to individual ingesters.
 type Distributor struct {
@@ -86,6 +92,10 @@ type Distributor struct {
 	ingesterPool  *ingester_client.Pool
 	limits        *validation.Overrides
 	billingClient *billing.Client
+
+	// For handling HA instances
+	haFlag    bool
+	instances clusterTracker
 
 	// Per-user rate limiters.
 	ingestLimitersMtx sync.RWMutex
@@ -150,6 +160,8 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 		limits:         limits,
 		ingestLimiters: map[string]*rate.Limiter{},
 		quit:           make(chan struct{}),
+		instances:      NewClusterTracker(true),
+		haFlag:         false,
 	}
 
 	go d.loop()
@@ -241,18 +253,41 @@ func (d *Distributor) Push(ctx context.Context, req *client.WriteRequest) (*clie
 		return nil, err
 	}
 
+	d.haFlag = true
 	var lastPartialErr error
+
+	// Check the HA cluster and instance labels.
+	if d.haFlag && len(req.Timeseries) > 0 {
+		ts := req.Timeseries[0]
+		cluster, instance, err := removeHALabels(&ts.Labels)
+		if err != nil && (cluster != "" && instance != "") {
+			return nil, err
+		}
+		req.Timeseries[0].Labels = ts.Labels
+
+		// Lookup the cluster/instance here to see if we want to accept this sample
+		if inst := d.instances.LookupInstance(cluster, instance); inst.instance != instance && (cluster != "" && instance != "") { // Don't accept the sample.
+			// If we assume all samples will have the same cluster/instance labels we can return an error here.
+			// Should we just silently drop here?
+			return nil, fmt.Errorf("dropping sample")
+		}
+	}
 
 	// Build slice of sampleTrackers, one per timeseries.
 	sampleTrackers := make([]sampleTracker, 0, len(req.Timeseries))
 	keys := make([]uint32, 0, len(req.Timeseries))
 	numSamples := 0
 	for _, ts := range req.Timeseries {
+		// We don't need to do a lookup of the cluster instance but we still want
+		//to remove them from the labels we use in the rest of the system.
+		_, _, err := removeHALabels(&ts.Labels)
+		if err != nil {
+			return nil, err
+		}
 		key, err := d.tokenForLabels(userID, ts.Labels)
 		if err != nil {
 			return nil, err
 		}
-
 		if err := d.limits.ValidateLabels(userID, ts.Labels); err != nil {
 			lastPartialErr = err
 			continue
