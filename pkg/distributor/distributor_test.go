@@ -169,6 +169,7 @@ func TestDistributorPush_HAInstances(t *testing.T) {
 		for _, shardByAllLabels := range []bool{true, false} {
 			t.Run(fmt.Sprintf("[%d](shardByAllLabels=%v)", i, shardByAllLabels), func(t *testing.T) {
 				d := prepare(t, 1, 1, 0, shardByAllLabels)
+				d.cfg.HAReplicas = true
 				d.instances = newClusterTrackerMock()
 				// Fake the accepted instance.
 				ret := d.instances.LookupInstance(tc.cluster, tc.acceptedInstance)
@@ -366,7 +367,7 @@ func prepare(t *testing.T, numIngesters, happyIngesters int, queryDelay time.Dur
 	overrides, err := validation.NewOverrides(limits)
 	require.NoError(t, err)
 
-	d, err := New(cfg, clientConfig, overrides, ring)
+	d, err := New(cfg, kvstore.ConsulConfig{}, clientConfig, overrides, ring)
 	require.NoError(t, err)
 
 	return d

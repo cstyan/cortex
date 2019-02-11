@@ -2,16 +2,18 @@ package distributor
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
-	// "net/http"
 	"sync"
 	"time"
 
+	"github.com/go-kit/kit/log/level"
 	"github.com/weaveworks/common/mtime"
 
 	"github.com/cortexproject/cortex/pkg/ingester/client"
-	"github.com/cortexproject/cortex/pkg/kvstore"
+	"github.com/cortexproject/cortex/pkg/ring"
+	"github.com/cortexproject/cortex/pkg/util"
 )
 
 // Treat these as consts.
@@ -33,46 +35,76 @@ type tracker struct {
 	// Instances we are accepting samples from.
 	electedLock sync.RWMutex
 	elected     map[string]instanceTracker
+	done        chan struct{}
+	quit        context.CancelFunc
 
 	// We should only update the timestamp this often
 	writeTimeout int64
 
 	consulLock       sync.RWMutex
 	overwriteTimeout int64 // Timeout that has to occur before we overwrite to a different instance
-	client           kvstore.KVClient
+	client           ring.KVClient
 }
 
-func NewClusterTracker(local bool) clusterTracker {
-	var client kvstore.KVClient
+// Config contains the configuration require to
+// create a Distributor
+type HATrackerConfig struct {
+	replicaLabel string
+	clusterLabel string
+	prefix       string
+
+	consul ring.ConsulConfig
+}
+
+// RegisterFlags adds the flags required to config this to the given FlagSet
+func (cfg *HATrackerConfig) RegisterFlags(f *flag.FlagSet) {
+	f.StringVar(&cfg.replicaLabel, "ha-tracker.replica", "replica", "Prometheus label to look for in samples to identify a Proemtheus HA replica.")
+	f.StringVar(&cfg.clusterLabel, "ha-tracker.cluster", "cluster", "Prometheus label to look for in samples to identify a Poemtheus HA cluster.")
+	f.StringVar(&cfg.prefix, "ha-tracker.prefix", "prom_ha", "Prefix to store HA cluster accept instance information under within KV store.")
+}
+
+func NewClusterTracker(local bool, cfg ring.ConsulConfig) clusterTracker {
+	var client ring.KVClient
 	var err error
-	codec := kvstore.ProtoCodec{Factory: ProtoInstanceDescFactory}
+	codec := ring.ProtoCodec{Factory: ProtoInstanceDescFactory}
 	if local {
-		client = kvstore.NewInMemoryKVClient(codec)
+		level.Info(util.Logger).Log("msg", "using in memory KV store for ClusterTracker")
+		client = ring.NewInMemoryKVClient(codec)
 	} else {
-		client, err = kvstore.NewConsulClient(kvstore.ConsulConfig{
-			Host: "localhost:8500",
-		}, codec)
+		level.Info(util.Logger).Log("msg", "connecting to consul", "host", cfg.Host)
+		client, err = ring.NewConsulClient(cfg, codec)
 
 		if err != nil {
 			os.Exit(1)
 		}
 	}
-	return &tracker{
+	var ctx context.Context
+	ctx, quit := context.WithCancel(context.Background())
+	t := &tracker{
 		elected:          make(map[string]instanceTracker),
 		writeTimeout:     10 * time.Second.Nanoseconds(),
 		overwriteTimeout: time.Minute.Nanoseconds(),
 		client:           client,
+		quit:             quit,
 	}
+	go t.loop(ctx)
+	return t
 }
 
-// This should take in a cancellable context eventually.
-func (c *tracker) StartWatch() {
-	go c.client.WatchPrefix(context.Background(), fmt.Sprintf("%s", prefix), func(value interface{}) bool {
+// follows pattern used by rin for WatchKey
+func (c *tracker) loop(ctx context.Context) {
+	defer close(c.done)
+	c.client.WatchPrefix(context.Background(), fmt.Sprintf("%s", prefix), func(value interface{}) bool {
 		if value == nil {
 			return true
 		}
 		return true
 	})
+}
+
+func (c *tracker) Stop() {
+	c.quit()
+	<-c.done
 }
 
 func (c *tracker) setTimeout(overwrite, write int64) {
@@ -84,7 +116,7 @@ func (c *tracker) setTimeout(overwrite, write int64) {
 // TODO, we probably want to return certain error types from the cas, to propagate back
 // to callers so they can decide whether or not to cache info locally
 func (c *tracker) casWrapper(ctx context.Context, cluster, instance string, now int64) error {
-	err := c.client.CAS(context.Background(), fmt.Sprintf("%s/%s", prefix, cluster), func(in interface{}) (out interface{}, retry bool, err error) {
+	err := c.client.CAS(ctx, fmt.Sprintf("%s/%s", prefix, cluster), func(in interface{}) (out interface{}, retry bool, err error) {
 		desc, ok := in.(*InstanceDesc)
 		// TODO: is this case right, what do we want to do?
 		// it means there was either invalid or no data for the key
@@ -145,7 +177,7 @@ func (c *tracker) setInstance(cluster, instance string, ts int64) {
 
 // TODO: simplify this function.
 // Returns true if we should accept the sample for this cluster/instance, else false.
-func (c *tracker) LookupInstance(cluster, instance string) *instanceTracker {
+func (c *tracker) LookupInstance(ctx context.Context, cluster, instance string) *instanceTracker {
 	now := mtime.Now().UnixNano()
 	c.electedLock.RLock()
 	v, ok := c.elected[cluster]
@@ -153,19 +185,19 @@ func (c *tracker) LookupInstance(cluster, instance string) *instanceTracker {
 
 	// No instance in local cache for this HA cluster yet.
 	if !ok {
-		return c.checkConsul(cluster, instance, now)
+		return c.checkConsul(ctx, cluster, instance, now)
 	}
 
 	// The instance was in the distributors cache.
-	return c.checkLocal(v, cluster, instance, now)
+	return c.checkLocal(ctx, v, cluster, instance, now)
 }
 
 // Only calls return false to bail out early, otherwise continues on to return true at the end.
-func (c *tracker) checkConsul(cluster, instance string, now int64) *instanceTracker {
+func (c *tracker) checkConsul(ctx context.Context, cluster, instance string, now int64) *instanceTracker {
 	ret := instanceTracker{}
 
 	// We should check Consul first, and only if it doesn't contain
-	err := c.casWrapper(context.Background(), cluster, instance, now)
+	err := c.casWrapper(ctx, cluster, instance, now)
 	if err != nil {
 		return nil
 	}
@@ -177,7 +209,7 @@ func (c *tracker) checkConsul(cluster, instance string, now int64) *instanceTrac
 }
 
 // We found an entry for the cluster in our local cache when doing a lookup.
-func (c *tracker) checkLocal(entry instanceTracker, cluster, instance string, now int64) *instanceTracker {
+func (c *tracker) checkLocal(ctx context.Context, entry instanceTracker, cluster, instance string, now int64) *instanceTracker {
 	ret := instanceTracker{}
 	if entry.instance != instance {
 		// we don't want to overwrite yet
@@ -185,7 +217,7 @@ func (c *tracker) checkLocal(entry instanceTracker, cluster, instance string, no
 			return &entry
 		}
 		// overwrite
-		err := c.casWrapper(context.Background(), cluster, instance, now)
+		err := c.casWrapper(ctx, cluster, instance, now)
 		if err != nil {
 			return nil
 		}
@@ -197,7 +229,7 @@ func (c *tracker) checkLocal(entry instanceTracker, cluster, instance string, no
 	}
 	// we should CAS the timestamp if writeTimeout
 	if now-entry.timestamp > c.writeTimeout {
-		err := c.casWrapper(context.Background(), cluster, instance, now)
+		err := c.casWrapper(ctx, cluster, instance, now)
 		if err != nil {
 			// how should we handle an error here?
 			return nil

@@ -79,9 +79,9 @@ var (
 )
 
 type clusterTracker interface {
-	LookupInstance(cluster string, instance string) *instanceTracker
+	LookupInstance(ctx context.Context, cluster string, instance string) *instanceTracker
 	setTimeout(overwrite, write int64)
-	StartWatch()
+	loop(ctx context.Context)
 }
 
 // Distributor is a storage.SampleAppender and a client.Querier which
@@ -94,7 +94,6 @@ type Distributor struct {
 	billingClient *billing.Client
 
 	// For handling HA instances
-	haFlag    bool
 	instances clusterTracker
 
 	// Per-user rate limiters.
@@ -107,8 +106,12 @@ type Distributor struct {
 // create a Distributor
 type Config struct {
 	EnableBilling bool
+	HAReplicas    bool
+	KVStore       string
 	BillingConfig billing.Config
 	PoolConfig    ingester_client.PoolConfig
+	TrackerConfig HATrackerConfig
+	ConsulConfig  ring.ConsulConfig
 
 	RemoteTimeout       time.Duration
 	ExtraQueryDelay     time.Duration
@@ -124,8 +127,11 @@ type Config struct {
 func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	cfg.BillingConfig.RegisterFlags(f)
 	cfg.PoolConfig.RegisterFlags(f)
+	cfg.TrackerConfig.RegisterFlags(f)
 
 	f.BoolVar(&cfg.EnableBilling, "distributor.enable-billing", false, "Report number of ingested samples to billing system.")
+	f.BoolVar(&cfg.HAReplicas, "distributor.accept-ha-labels", false, "Accept samples from Prometheus HA replicas gracefully (requires labels).")
+	f.StringVar(&cfg.KVStore, "distributor.store", "consul", "Backend storage to use for the ring (consul, inmemory).")
 	f.DurationVar(&cfg.RemoteTimeout, "distributor.remote-timeout", 2*time.Second, "Timeout for downstream ingesters.")
 	f.DurationVar(&cfg.ExtraQueryDelay, "distributor.extra-query-delay", 0, "Time to wait before sending more than the minimum successful query requests.")
 	f.DurationVar(&cfg.LimiterReloadPeriod, "distributor.limiter-reload-period", 5*time.Minute, "Period at which to reload user ingestion limits.")
@@ -160,8 +166,7 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 		limits:         limits,
 		ingestLimiters: map[string]*rate.Limiter{},
 		quit:           make(chan struct{}),
-		instances:      NewClusterTracker(true),
-		haFlag:         false,
+		instances:      NewClusterTracker(false, cfg.ConsulConfig),
 	}
 
 	go d.loop()
@@ -253,26 +258,30 @@ func (d *Distributor) Push(ctx context.Context, req *client.WriteRequest) (*clie
 		return nil, err
 	}
 
-	d.haFlag = true
 	var lastPartialErr error
 
 	// Check the HA cluster and instance labels.
-	if d.haFlag && len(req.Timeseries) > 0 {
+	if d.cfg.HAReplicas && len(req.Timeseries) > 0 {
 		ts := req.Timeseries[0]
-		cluster, instance, err := removeHALabels(&ts.Labels)
-		if err != nil && (cluster != "" && instance != "") {
+		cluster, replica, err := removeHALabels(&ts.Labels)
+		if cluster != "" && replica != "" {
+			goto acceptSample
+		}
+		if err != nil && (cluster != "" && replica != "") {
 			return nil, err
 		}
 		req.Timeseries[0].Labels = ts.Labels
 
 		// Lookup the cluster/instance here to see if we want to accept this sample
-		if inst := d.instances.LookupInstance(cluster, instance); inst.instance != instance && (cluster != "" && instance != "") { // Don't accept the sample.
+		inst := d.instances.LookupInstance(ctx, cluster, replica)
+		if inst == nil || (inst.instance != replica && (cluster != "" && replica != "")) { // Don't accept the sample.
 			// If we assume all samples will have the same cluster/instance labels we can return an error here.
 			// Should we just silently drop here?
-			return nil, fmt.Errorf("dropping sample")
+			return nil, fmt.Errorf("dropping sample, found HA labels cluster:%s, replica:%s", cluster, replica)
 		}
 	}
 
+acceptSample:
 	// Build slice of sampleTrackers, one per timeseries.
 	sampleTrackers := make([]sampleTracker, 0, len(req.Timeseries))
 	keys := make([]uint32, 0, len(req.Timeseries))

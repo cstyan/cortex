@@ -18,6 +18,7 @@ var inmemoryStore KVClient
 type KVClient interface {
 	CAS(ctx context.Context, key string, f CASCallback) error
 	WatchKey(ctx context.Context, key string, f func(interface{}) bool)
+	WatchPrefix(ctx context.Context, prefix string, f func(interface{}) bool)
 	Get(ctx context.Context, key string) (interface{}, error)
 	PutBytes(ctx context.Context, key string, buf []byte) error
 }
@@ -25,20 +26,20 @@ type KVClient interface {
 // CASCallback is the type of the callback to CAS.  If err is nil, out must be non-nil.
 type CASCallback func(in interface{}) (out interface{}, retry bool, err error)
 
-func newKVStore(cfg Config) (KVClient, error) {
+func NewKVStore(cfg Config, codec Codec) (KVClient, error) {
 	if cfg.Mock != nil {
 		return cfg.Mock, nil
 	}
 
 	switch cfg.Store {
 	case "consul":
-		codec := ProtoCodec{Factory: ProtoDescFactory}
+		// codec := ProtoCodec{Factory: ProtoDescFactory}
 		return NewConsulClient(cfg.Consul, codec)
 	case "inmemory":
 		// If we use the in-memory store, make sure everyone gets the same instance
 		// within the same process.
 		inmemoryStoreInit.Do(func() {
-			inmemoryStore = NewInMemoryKVClient()
+			inmemoryStore = NewInMemoryKVClient(codec)
 		})
 		return inmemoryStore, nil
 	default:

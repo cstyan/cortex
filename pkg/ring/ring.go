@@ -94,8 +94,8 @@ func New(cfg Config) (*Ring, error) {
 	if cfg.ReplicationFactor <= 0 {
 		return nil, fmt.Errorf("ReplicationFactor must be greater than zero: %d", cfg.ReplicationFactor)
 	}
-
-	store, err := newKVStore(cfg)
+	codec := ProtoCodec{Factory: ProtoDescFactory}
+	store, err := NewKVStore(cfg, codec)
 	if err != nil {
 		return nil, err
 	}

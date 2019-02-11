@@ -48,6 +48,7 @@ func main() {
 			},
 			ExcludeRequestInLog: true,
 		}
+		// consulConfig
 		ringConfig        ring.Config
 		distributorConfig distributor.Config
 		clientConfig      client.Config
@@ -78,6 +79,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// consulConfig := kvstore.ConsulConfig{}
+	// consulConfig = ringConfig.Consul.(kvstore.ConsulConfig)
+	distributorConfig.ConsulConfig = ringConfig.Consul
 	dist, err := distributor.New(distributorConfig, clientConfig, overrides, r)
 	if err != nil {
 		level.Error(util.Logger).Log("msg", "error initializing distributor", "err", err)

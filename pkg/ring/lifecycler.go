@@ -132,8 +132,8 @@ func NewLifecycler(cfg LifecyclerConfig, flushTransferer FlushTransferer) (*Life
 	if port == 0 {
 		port = *cfg.ListenPort
 	}
-
-	store, err := newKVStore(cfg.RingConfig)
+	codec := ProtoCodec{Factory: ProtoDescFactory}
+	store, err := NewKVStore(cfg.RingConfig, codec)
 	if err != nil {
 		return nil, err
 	}

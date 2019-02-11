@@ -128,7 +128,9 @@ func (c *consulClient) cas(ctx context.Context, key string, f CASCallback) error
 		}
 
 		if intermediate == nil {
-			panic("Callback must instantiate value!")
+			// panic("Callback must instantiate value!")
+			level.Info(util.Logger).Log("msg", "CAS callback returned nil, not writing to kvstore")
+			return fmt.Errorf("callback returned nil, not writing to kvstore")
 		}
 
 		bytes, err := c.codec.Encode(intermediate)
@@ -203,6 +205,48 @@ func (c *consulClient) WatchKey(ctx context.Context, key string, f func(interfac
 	}
 }
 
+// Noop for now
+func (c *consulClient) WatchPrefix(ctx context.Context, prefix string, f func(interface{}) bool) {
+	var (
+		backoff = util.NewBackoff(ctx, backoffConfig)
+		index   = uint64(0)
+	)
+	for backoff.Ongoing() {
+		queryOptions := &consul.QueryOptions{
+			RequireConsistent: true,
+			WaitIndex:         index,
+			WaitTime:          longPollDuration,
+		}
+
+		kvps, meta, err := c.kv.List(prefix, queryOptions.WithContext(ctx))
+		if err != nil || kvps == nil {
+			level.Error(util.Logger).Log("msg", "error getting path", "prefix", prefix, "err", err)
+			backoff.Wait()
+			continue
+		}
+		backoff.Reset()
+		// Skip if the index is the same as last time, because the key value is
+		// guaranteed to be the same as last time
+		if index == meta.LastIndex {
+			continue
+		}
+		index = meta.LastIndex
+		// We need a byte array
+		var buf []byte
+		for _, kvp := range kvps {
+			buf = append(buf, kvp.Value...)
+		}
+		out, err := c.codec.Decode(buf)
+		if err != nil {
+			level.Error(util.Logger).Log("msg", "error decoding list of values for prefix", "prefix", prefix, "err", err)
+			continue
+		}
+		if !f(out) {
+			return
+		}
+	}
+}
+
 func (c *consulClient) PutBytes(ctx context.Context, key string, buf []byte) error {
 	_, err := c.kv.Put(&consul.KVPair{
 		Key:   key,
@@ -243,6 +287,11 @@ func (c *prefixedConsulClient) CAS(ctx context.Context, key string, f CASCallbac
 // WatchKey watches a key.
 func (c *prefixedConsulClient) WatchKey(ctx context.Context, key string, f func(interface{}) bool) {
 	c.consul.WatchKey(ctx, c.prefix+key, f)
+}
+
+// WatchKey watches a prefix.
+func (c *prefixedConsulClient) WatchPrefix(ctx context.Context, prefix string, f func(interface{}) bool) {
+	c.consul.WatchKey(ctx, prefix, f)
 }
 
 // PutBytes writes bytes to Consul.

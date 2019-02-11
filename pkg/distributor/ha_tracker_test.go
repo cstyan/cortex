@@ -1,6 +1,7 @@
 package distributor
 
 import (
+	"github.com/cortexproject/cortex/pkg/ring"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 func TestLookupInstance_OverwriteTimeout(t *testing.T) {
 	start := mtime.Now()
-	c := NewClusterTracker(true)
+	c := NewClusterTracker(true, ring.ConsulConfig{})
 	c.setTimeout(time.Second.Nanoseconds(), time.Second.Nanoseconds())
 
 	// Write the first time.
@@ -37,7 +38,7 @@ func TestLookupInstance_OverwriteTimeout(t *testing.T) {
 }
 
 func TestLookupInstance_MultiCluster(t *testing.T) {
-	c := NewClusterTracker(true)
+	c := NewClusterTracker(true, ring.ConsulConfig{})
 	instance1 := "instance1"
 	instance2 := "instance2"
 
@@ -64,7 +65,7 @@ func TestLookupInstance_MultiCluster_Timeout(t *testing.T) {
 	start := mtime.Now()
 	instance1 := "instance1"
 	instance2 := "instance2"
-	c := NewClusterTracker(true)
+	c := NewClusterTracker(true, ring.ConsulConfig{})
 	c.setTimeout(time.Second.Nanoseconds(), time.Second.Nanoseconds())
 
 	// Write the first time.
@@ -108,7 +109,7 @@ func TestLookupInstance_WriteTimeout(t *testing.T) {
 	start := mtime.Now()
 	instance1 := "instance1"
 	// instance2 := "instance2"
-	c := NewClusterTracker(true)
+	c := NewClusterTracker(true, ring.ConsulConfig{})
 	c.setTimeout(2*time.Second.Nanoseconds(), time.Second.Nanoseconds())
 
 	// Write the first time.
